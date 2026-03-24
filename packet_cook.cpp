@@ -130,13 +130,24 @@ xor_tile_avx2(char *data, int len, const char *tile, int tile_len)
 }
 
 __attribute__((target("avx512bw")))
+static inline __m512i
+broadcast_128_to_512(__m128i v)
+{
+    __m512i out = _mm512_castsi128_si512(v);
+    out = _mm512_inserti32x4(out, v, 1);
+    out = _mm512_inserti32x4(out, v, 2);
+    out = _mm512_inserti32x4(out, v, 3);
+    return out;
+}
+
+__attribute__((target("avx512bw")))
 static void
 xor_tile_avx512(char *data, int len, const char *tile, int tile_len)
 {
     int t = 0, i = 0;
     if (tile_len == 16) {
         /* Common case: broadcast 16-byte tile to 512-bit, no wrap logic */
-        __m512i tile512 = _mm512_broadcast_i32x4(
+        __m512i tile512 = broadcast_128_to_512(
             _mm_loadu_si128((const __m128i *)tile));
         for (; i + 64 <= len; i += 64) {
             __m512i d = _mm512_loadu_si512(data + i);

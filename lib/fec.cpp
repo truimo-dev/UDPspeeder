@@ -32,8 +32,6 @@
  * OF SUCH DAMAGE.
  */
 
-#include <vector>
-
 /*
  * The following parameter defines how many bits are used for
  * field elements. The code supports any value from 2 to 16
@@ -505,12 +503,23 @@ addmul1_avx2(gf *dst, gf *src, gf c, int sz)
 }
 
 __attribute__((target("avx512bw")))
+static inline __m512i
+broadcast_128_to_512(__m128i v)
+{
+    __m512i out = _mm512_castsi128_si512(v);
+    out = _mm512_inserti32x4(out, v, 1);
+    out = _mm512_inserti32x4(out, v, 2);
+    out = _mm512_inserti32x4(out, v, 3);
+    return out;
+}
+
+__attribute__((target("avx512bw")))
 static void
 addmul1_avx512(gf *dst, gf *src, gf c, int sz)
 {
-    __m512i tbl_lo = _mm512_broadcast_i32x4(
+    __m512i tbl_lo = broadcast_128_to_512(
 	_mm_load_si128((const __m128i *)gf_lo_table[c]));
-    __m512i tbl_hi = _mm512_broadcast_i32x4(
+    __m512i tbl_hi = broadcast_128_to_512(
 	_mm_load_si128((const __m128i *)gf_hi_table[c]));
     __m512i mask   = _mm512_set1_epi8(0x0F);
 
@@ -734,12 +743,16 @@ invert_mat(gf *src, int k)
     int irow, icol, row, col, i, ix ;
 
     int error = 1 ;
-    std::vector<int> indxc(k);
-    std::vector<int> indxr(k);
-    std::vector<int> ipiv(k);
-    std::vector<gf> id_row(k);
+    int indxc[GF_SIZE + 1];
+    int indxr[GF_SIZE + 1];
+    int ipiv[GF_SIZE + 1];
+    gf id_row[GF_SIZE + 1];
 
-    memset(id_row.data(), 0, (unsigned)k * sizeof(gf));
+    if (k > GF_SIZE + 1) {
+        goto fail;
+    }
+
+    memset(id_row, 0, (unsigned)k * sizeof(gf));
     DEB( pivloops=0; pivswaps=0 ; /* diagnostic */ )
     /*
      * ipiv marks elements already used as pivots.
@@ -819,7 +832,7 @@ found_piv:
 	 * we can optimize the addmul).
 	 */
 	id_row[icol] = 1;
-		if (memcmp(pivot_row, id_row.data(), k*sizeof(gf)) != 0) {
+		if (memcmp(pivot_row, id_row, k*sizeof(gf)) != 0) {
 	    for (p = src, ix = 0 ; ix < k ; ix++, p += k ) {
 		if (ix != icol) {
 		    c = p[icol] ;
@@ -1156,7 +1169,11 @@ fec_decode(void *code0, void *pkt0[], int index[], int sz)
 	struct fec_parms * code=(struct fec_parms*)code0;
 	gf **pkt=(gf**)pkt0;
     int row, col , k = code->k ;
-    std::vector<gf *> new_pkt(k);
+    gf *new_pkt[GF_SIZE + 1];
+
+    if (k > GF_SIZE + 1) {
+	return 1 ;
+    }
 
     if (GF_BITS > 8)
 	sz /= 2 ;
