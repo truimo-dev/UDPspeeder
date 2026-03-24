@@ -383,6 +383,10 @@ static int cpu_has_avx2(void)
 
 static int cpu_has_avx512bw(void)
 {
+    /* Generic release binaries should avoid AVX-512 dispatch.
+       It has proven too fragile across deployed hosts/VMs. */
+    return 0;
+
     unsigned int eax, ebx, ecx, edx;
 
     /* OSXSAVE — OS supports XSAVE */

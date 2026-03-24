@@ -213,27 +213,17 @@ xor_tile(char *data, int len, const char *tile, int tile_len)
     if (xor_simd_tier < 0) {
         unsigned int eax, ebx, ecx, edx;
         xor_simd_tier = 0;
-        /* Check AVX2: CPUID leaf 7, EBX bit 5 */
-        __asm__ __volatile__("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(7), "c"(0));
-        if ((ebx >> 5) & 1)
-            xor_simd_tier = 1;
-        /* Check AVX-512BW: OSXSAVE + XCR0 + CPUID leaf 7, EBX bit 30 */
-        if (xor_simd_tier >= 1) {
-            __asm__ __volatile__("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1), "c"(0));
-            if (ecx & (1u << 27)) { /* OSXSAVE */
-                unsigned int xcr0;
-                __asm__ __volatile__("xgetbv" : "=a"(xcr0) : "c"(0) : "edx");
-                if ((xcr0 & 0xE6) == 0xE6) { /* SSE+AVX+opmask+ZMM */
-                    __asm__ __volatile__("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(7), "c"(0));
-                    if ((ebx >> 30) & 1)
-                        xor_simd_tier = 2;
-                }
+        /* Check AVX2 conservatively: OSXSAVE + XCR0 + CPUID leaf 7, EBX bit 5 */
+        __asm__ __volatile__("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1), "c"(0));
+        if (ecx & (1u << 27)) { /* OSXSAVE */
+            unsigned int xcr0;
+            __asm__ __volatile__("xgetbv" : "=a"(xcr0) : "c"(0) : "edx");
+            if ((xcr0 & 0x6) == 0x6) { /* SSE+AVX state enabled by OS */
+                __asm__ __volatile__("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(7), "c"(0));
+                if ((ebx >> 5) & 1)
+                    xor_simd_tier = 1;
             }
         }
-    }
-    if (xor_simd_tier >= 2) {
-        xor_tile_avx512(data, len, tile, tile_len);
-        return;
     }
     if (xor_simd_tier >= 1) {
         xor_tile_avx2(data, len, tile, tile_len);
