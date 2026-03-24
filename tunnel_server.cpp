@@ -464,13 +464,17 @@ int tunnel_server_event_loop() {
         g_uring_ctx = &server_uring_ctx;
         static struct ev_io uring_watcher;
         ev_io_init(&uring_watcher, server_uring_cb, server_uring_ctx.ring_fd, EV_READ);
-        ev_io_start(loop, &uring_watcher);
-
-        uring_add_multishot_recvmsg(&server_uring_ctx, local_listen_fd,
-                                      uring_tag(URING_TAG_SERVER_LOCAL, 0));
-        uring_submit(&server_uring_ctx);
-        use_uring = 1;
-        mylog(log_info, "io_uring: active for server sockets\n");
+        if (uring_add_multishot_recvmsg(&server_uring_ctx, local_listen_fd,
+                                        uring_tag(URING_TAG_SERVER_LOCAL, 0)) == 0 &&
+            uring_submit(&server_uring_ctx) >= 0) {
+            ev_io_start(loop, &uring_watcher);
+            use_uring = 1;
+            mylog(log_info, "io_uring: active for server sockets\n");
+        } else {
+            mylog(log_warn, "io_uring: initial submit failed, using recvfrom fallback\n");
+            g_uring_ctx = NULL;
+            uring_destroy(&server_uring_ctx);
+        }
     }
 #endif
 

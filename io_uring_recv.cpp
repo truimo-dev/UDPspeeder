@@ -337,8 +337,10 @@ uring_submit(uring_ctx_t *ctx)
     unsigned submitted = *ctx->sq_tail - io_uring_smp_load_acquire(ctx->sq_head);
     if (submitted == 0) return 0;
 
-    int ret = sys_io_uring_enter(ctx->ring_fd, submitted, 0,
-                                  IORING_ENTER_SQ_WAKEUP, NULL, 0);
+    /* IORING_ENTER_SQ_WAKEUP is only valid for SQPOLL rings.
+       This ring is created without IORING_SETUP_SQPOLL, so a plain
+       submit is required here. */
+    int ret = sys_io_uring_enter(ctx->ring_fd, submitted, 0, 0, NULL, 0);
     if (ret < 0) {
         mylog(log_warn, "io_uring: io_uring_enter submit failed (errno %d)\n", errno);
         return -1;
@@ -351,8 +353,6 @@ uring_submit_and_flush(uring_ctx_t *ctx)
 {
     unsigned submitted = *ctx->sq_tail - io_uring_smp_load_acquire(ctx->sq_head);
     unsigned flags = IORING_ENTER_GETEVENTS;
-    if (submitted > 0)
-        flags |= IORING_ENTER_SQ_WAKEUP;
 
     int ret = sys_io_uring_enter(ctx->ring_fd, submitted, 0, flags, NULL, 0);
     if (ret < 0) {

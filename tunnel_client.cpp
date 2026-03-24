@@ -357,15 +357,20 @@ int tunnel_client_event_loop() {
         client_uring_conn_info = &conn_info;
         static struct ev_io uring_watcher;
         ev_io_init(&uring_watcher, client_uring_cb, client_uring_ctx.ring_fd, EV_READ);
-        ev_io_start(loop, &uring_watcher);
-
-        uring_add_multishot_recvmsg(&client_uring_ctx, local_listen_fd,
-                                      uring_tag(URING_TAG_CLIENT_LOCAL, 0));
-        uring_add_multishot_recv(&client_uring_ctx, remote_fd,
-                                   uring_tag(URING_TAG_CLIENT_REMOTE, 0));
-        uring_submit(&client_uring_ctx);
-        use_uring = 1;
-        mylog(log_info, "io_uring: active for client sockets\n");
+        if (uring_add_multishot_recvmsg(&client_uring_ctx, local_listen_fd,
+                                        uring_tag(URING_TAG_CLIENT_LOCAL, 0)) == 0 &&
+            uring_add_multishot_recv(&client_uring_ctx, remote_fd,
+                                     uring_tag(URING_TAG_CLIENT_REMOTE, 0)) == 0 &&
+            uring_submit(&client_uring_ctx) >= 0) {
+            ev_io_start(loop, &uring_watcher);
+            use_uring = 1;
+            mylog(log_info, "io_uring: active for client sockets\n");
+        } else {
+            mylog(log_warn, "io_uring: initial submit failed, using recvfrom fallback\n");
+            g_uring_ctx = NULL;
+            client_uring_conn_info = NULL;
+            uring_destroy(&client_uring_ctx);
+        }
     }
 #endif
 
