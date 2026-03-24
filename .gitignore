@@ -1,0 +1,10 @@
+cmake-build-debug/
+
+# Binaries and executables
+speederv2
+speederv2_*
+
+# Build artifacts
+git_version.h
+
+.idea/

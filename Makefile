@@ -7,6 +7,17 @@ cc_mingw_cross=i686-w64-mingw32-g++-posix
 cc_mac_cross=o64-clang++ -stdlib=libc++
 cc_x86=/toolchains/lede-sdk-17.01.2-x86-generic_gcc-5.4.0_musl-1.1.16.Linux-x86_64/staging_dir/toolchain-i386_pentium4_gcc-5.4.0_musl-1.1.16/bin/i486-openwrt-linux-c++
 cc_amd64=/toolchains/lede-sdk-17.01.2-x86-64_gcc-5.4.0_musl-1.1.16.Linux-x86_64/staging_dir/toolchain-x86_64_gcc-5.4.0_musl-1.1.16/bin/x86_64-openwrt-linux-c++
+android_ndk?=$(HOME)/Library/Android/sdk/ndk/27.3.13750724
+android_api?=21
+android_tc=$(android_ndk)/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android$(android_api)-clang++
+macos_arm64_cxx?=clang++
+host_os:=$(shell uname -s)
+host_arch:=$(shell uname -m)
+ifeq ($(host_os),Linux)
+ifneq (,$(filter $(host_arch),x86_64 amd64))
+linux_amd64_cxx?=g++
+endif
+endif
 #cc_bcm2708=/home/wangyu/raspberry/tools/arm-bcm2708/gcc-linaro-arm-linux-gnueabihf-raspbian/bin/arm-linux-gnueabihf-g++ 
 
 
@@ -85,6 +96,15 @@ x86:git_version          #to build this you need 'g++-multilib' installed
 	${cc_x86}   -o ${NAME}_$@      -I. ${SOURCES} ${FLAGS} -lrt -static -O2 -lgcc_eh -ggdb
 arm:git_version
 	${cc_arm}   -o ${NAME}_$@      -I. ${SOURCES} ${FLAGS} -lrt -static -O2 -lgcc_eh
+
+android_arm64:git_version
+	${android_tc} -o ${NAME}_$@    -I. ${SOURCES} ${FLAGS} -O2 -fPIE -pie -pthread -static-libstdc++
+
+macos_arm64:git_version
+	${macos_arm64_cxx} -o ${NAME}_$@ -I. ${SOURCES} ${FLAGS} -O2 -arch arm64
+
+linux_amd64:git_version
+	${linux_amd64_cxx} -o ${NAME}_$@ -I. ${SOURCES} ${FLAGS} -O2 -pthread -lrt -static-libstdc++
 
 
 release: ${TARGETS}
