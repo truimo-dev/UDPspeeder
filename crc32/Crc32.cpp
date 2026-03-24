@@ -54,12 +54,12 @@
 #error "endian detection failed"
 #endif
 
-#if defined(IS_LITTLE_ENDIAN)
-  #define __BYTE_ORDER __LITTLE_ENDIAN
-#endif
-
-#if defined(IS_BIG_ENDIAN)
-  #define __BYTE_ORDER __BIG_ENDIAN
+#ifndef __BYTE_ORDER
+  #if defined(IS_LITTLE_ENDIAN)
+    #define __BYTE_ORDER __LITTLE_ENDIAN
+  #elif defined(IS_BIG_ENDIAN)
+    #define __BYTE_ORDER __BIG_ENDIAN
+  #endif
 #endif
 
 // define endianess and some integer data types

@@ -13,3 +13,5 @@ git_version.h
 # misc
 .DS_Store
 *.pem
+.claude/
+.gitmodules

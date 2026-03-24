@@ -13,7 +13,7 @@ int mtu_warn = 1350;
 
 int disable_mtu_warn = 1;
 int disable_fec = 0;
-int disable_checksum = 0;
+/* disable_checksum now lives in cook_ctx (packet.cpp) */
 
 int debug_force_flush_fec = 0;
 
@@ -204,6 +204,25 @@ int from_fec_to_normal(conn_info_t &conn_info, char *data, int len, int &out_n, 
             //printf("<%s>\n",s_arr[i]);
     }*/
     // my_send(dest,data,len);
+    return 0;
+}
+
+int delay_send_batch(int n, my_time_t *delays, const dest_t &dest, char **data_arr, int *len_arr) {
+    if (n <= 0) return 0;
+
+    /* Fast path: all delays zero and no random_drop → single sendmmsg */
+    if (n > 1 && random_drop == 0) {
+        int all_zero = 1;
+        for (int i = 0; i < n; i++) {
+            if (delays[i] != 0) { all_zero = 0; break; }
+        }
+        if (all_zero)
+            return my_send_batch(dest, data_arr, len_arr, n);
+    }
+
+    /* Slow path: individual sends with per-packet delay/drop */
+    for (int i = 0; i < n; i++)
+        delay_send(delays[i], dest, data_arr[i], len_arr[i]);
     return 0;
 }
 
@@ -625,12 +644,13 @@ void process_arg(int argc, char *argv[]) {
         // opt_key+=opt;
         switch (opt) {
             case 'k':
-                sscanf(optarg, "%s\n", key_string);
-                mylog(log_debug, "key=%s\n", key_string);
-                if (strlen(key_string) == 0) {
+                sscanf(optarg, "%s\n", cook_ctx.key);
+                mylog(log_debug, "key=%s\n", cook_ctx.key);
+                if (strlen(cook_ctx.key) == 0) {
                     mylog(log_fatal, "key len=0??\n");
                     myexit(-1);
                 }
+                cook_ctx_prepare_key(&cook_ctx);
                 break;
             case 'j':
                 if (strchr(optarg, ':') == 0) {
@@ -723,12 +743,12 @@ void process_arg(int argc, char *argv[]) {
                     disable_fec = 1;
                 } else if (strcmp(long_options[option_index].name, "disable-obscure") == 0) {
                     mylog(log_info, "obscure disabled\n");
-                    disable_obscure = 1;
+                    cook_ctx.disable_obscure = 1;
                 } else if (strcmp(long_options[option_index].name, "disable-xor") == 0) {
                     mylog(log_info, "xor disabled\n");
-                    disable_xor = 1;
+                    cook_ctx.disable_xor = 1;
                 } else if (strcmp(long_options[option_index].name, "disable-checksum") == 0) {
-                    disable_checksum = 1;
+                    cook_ctx.disable_checksum = 1;
                     mylog(log_warn, "checksum disabled\n");
                 } else if (strcmp(long_options[option_index].name, "fix-latency") == 0) {
                     mylog(log_info, "fix-latency enabled\n");

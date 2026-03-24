@@ -1,0 +1,300 @@
+name: CI
+
+on:
+  push:
+    branches: [branch_libev, master]
+  pull_request:
+    branches: [branch_libev, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  deployments: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run correctness tests
+        run: make test
+
+      - name: Build benchmarks
+        run: make bench
+
+      - name: Run benchmarks
+        run: ./bench_udpspeeder
+
+      - name: Run benchmarks (JSON)
+        run: taskset -c 0 ./bench_udpspeeder --json
+
+      - name: Build production binary
+        run: make all
+
+      - name: Throughput test (io_uring)
+        run: bash bench/throughput.sh ./speederv2 --iterations 3 --duration 5
+
+      - name: Throughput test (recvfrom baseline)
+        run: UDPSPEEDER_NO_URING=1 bash bench/throughput.sh ./speederv2 --iterations 3 --duration 5
+
+      - name: Store benchmark results
+        if: github.ref == 'refs/heads/branch_libev'
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: UDPspeeder Benchmarks
+          tool: customSmallerIsBetter
+          output-file-path: bench_results.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          alert-threshold: '115%'
+          comment-on-alert: true
+          fail-on-alert: false
+          benchmark-data-dir-path: dev/bench
+
+  build-static:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: x86_64
+            packages: ""
+            toolchain_url: ""
+            bench_target: bench-static
+            test_target: test-static
+            prod_target: all
+            make_args: ""
+            bench_bin: bench_udpspeeder_static
+            test_bin: test_udpspeeder_static
+            prod_bin: speederv2
+            qemu_cmd: ""
+          - name: aarch64
+            packages: g++-aarch64-linux-gnu qemu-user-static
+            toolchain_url: ""
+            bench_target: bench-cross
+            test_target: test-cross
+            prod_target: all-cross
+            make_args: "CC=aarch64-linux-gnu-g++"
+            bench_bin: bench_udpspeeder_cross
+            test_bin: test_udpspeeder_cross
+            prod_bin: speederv2_cross
+            qemu_cmd: qemu-aarch64-static
+          - name: mips
+            packages: g++-mips-linux-gnu qemu-user-static
+            toolchain_url: ""
+            bench_target: bench-cross
+            test_target: test-cross
+            prod_target: all-cross
+            make_args: "CC=mips-linux-gnu-g++"
+            bench_bin: bench_udpspeeder_cross
+            test_bin: test_udpspeeder_cross
+            prod_bin: speederv2_cross
+            qemu_cmd: qemu-mips-static
+          - name: powerpc
+            packages: qemu-user-static zstd
+            toolchain_url: "https://downloads.openwrt.org/releases/25.12.0-rc5/targets/mpc85xx/p1010/openwrt-toolchain-25.12.0-rc5-mpc85xx-p1010_gcc-14.3.0_musl.Linux-x86_64.tar.zst"
+            bench_target: bench-cross
+            test_target: test-cross
+            prod_target: all-cross
+            make_args: "SPE=1"
+            bench_bin: bench_udpspeeder_cross
+            test_bin: test_udpspeeder_cross
+            prod_bin: speederv2_cross
+            qemu_cmd: "qemu-ppc-static -cpu e500v2"
+          - name: riscv64
+            packages: qemu-user-static zstd
+            toolchain_url: "https://downloads.openwrt.org/releases/24.10.0/targets/sifiveu/generic/openwrt-toolchain-24.10.0-sifiveu-generic_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
+            bench_target: bench-cross
+            test_target: test-cross
+            prod_target: all-cross
+            make_args: ""
+            bench_bin: bench_udpspeeder_cross
+            test_bin: test_udpspeeder_cross
+            prod_bin: speederv2_cross
+            qemu_cmd: qemu-riscv64-static
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install packages
+        if: matrix.packages != ''
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.packages }}
+
+      - name: Download OpenWrt toolchain
+        if: matrix.toolchain_url != ''
+        run: |
+          curl -fSL "${{ matrix.toolchain_url }}" -o toolchain.tar.zst
+          mkdir -p /tmp/openwrt-toolchain
+          tar --zstd -xf toolchain.tar.zst -C /tmp/openwrt-toolchain --strip-components=1
+          OPENWRT_GXX=$(find /tmp/openwrt-toolchain -name '*-g++' -path '*/bin/*' | head -1)
+          echo "OPENWRT_GXX=${OPENWRT_GXX}" >> "$GITHUB_ENV"
+          echo "STAGING_DIR=/tmp/openwrt-toolchain" >> "$GITHUB_ENV"
+          echo "Found toolchain: ${OPENWRT_GXX}"
+
+      - name: Build bench (${{ matrix.name }})
+        run: |
+          ARGS="${{ matrix.make_args }}"
+          if [ -n "${OPENWRT_GXX:-}" ]; then
+            ARGS="CC=${OPENWRT_GXX} ${ARGS}"
+          fi
+          make ${{ matrix.bench_target }} ${ARGS}
+
+      - name: Build test (${{ matrix.name }})
+        run: |
+          ARGS="${{ matrix.make_args }}"
+          if [ -n "${OPENWRT_GXX:-}" ]; then
+            ARGS="CC=${OPENWRT_GXX} ${ARGS}"
+          fi
+          make ${{ matrix.test_target }} ${ARGS}
+
+      - name: Build production (${{ matrix.name }})
+        run: |
+          ARGS="${{ matrix.make_args }}"
+          if [ -n "${OPENWRT_GXX:-}" ]; then
+            ARGS="CC=${OPENWRT_GXX} ${ARGS}"
+          fi
+          make ${{ matrix.prod_target }} ${ARGS}
+
+      - name: Verify binaries
+        run: file ${{ matrix.bench_bin }} ${{ matrix.test_bin }} ${{ matrix.prod_bin }}
+
+      - name: Run tests (QEMU)
+        if: matrix.qemu_cmd != ''
+        run: ${{ matrix.qemu_cmd }} ./${{ matrix.test_bin }}
+
+      - name: Run benchmarks (QEMU)
+        if: matrix.qemu_cmd != ''
+        run: ${{ matrix.qemu_cmd }} ./${{ matrix.bench_bin }}
+
+      - name: Run benchmarks JSON (QEMU)
+        if: matrix.qemu_cmd != '' && matrix.name == 'powerpc'
+        run: ${{ matrix.qemu_cmd }} ./${{ matrix.bench_bin }} --json
+
+      - name: Store PPC benchmark results
+        if: matrix.name == 'powerpc' && github.ref == 'refs/heads/branch_libev'
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: UDPspeeder Benchmarks (PowerPC e500v2 via QEMU)
+          tool: customSmallerIsBetter
+          output-file-path: bench_results.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          alert-threshold: '200%'
+          comment-on-alert: true
+          fail-on-alert: false
+          benchmark-data-dir-path: dev/bench-powerpc
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: udpspeeder-${{ matrix.name }}
+          path: |
+            ${{ matrix.bench_bin }}
+            ${{ matrix.test_bin }}
+            ${{ matrix.prod_bin }}
+            bench/profile.sh
+
+  interop:
+    runs-on: ubuntu-latest
+    needs: [build-static]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install QEMU
+        run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+
+      - name: Download x86_64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: udpspeeder-x86_64
+          path: bin/x86_64
+
+      - name: Download aarch64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: udpspeeder-aarch64
+          path: bin/aarch64
+
+      - name: Download mips artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: udpspeeder-mips
+          path: bin/mips
+
+      - name: Download powerpc artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: udpspeeder-powerpc
+          path: bin/powerpc
+
+      - name: Download riscv64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: udpspeeder-riscv64
+          path: bin/riscv64
+
+      - name: Set executable permissions
+        run: chmod +x bin/*/speederv2 bin/*/speederv2_cross
+
+      - name: Run cross-architecture interop tests
+        run: |
+          set -e
+          PASS=0
+          FAIL=0
+
+          X86="bin/x86_64/speederv2"
+          ARM="qemu-aarch64-static bin/aarch64/speederv2_cross"
+          MIPS="qemu-mips-static bin/mips/speederv2_cross"
+          PPC="qemu-ppc-static -cpu e500v2 bin/powerpc/speederv2_cross"
+          RV64="qemu-riscv64-static bin/riscv64/speederv2_cross"
+
+          TESTS=(
+            "x86-server_arm-client|$X86|$ARM"
+            "arm-server_x86-client|$ARM|$X86"
+            "x86-server_mips-client|$X86|$MIPS"
+            "mips-server_x86-client|$MIPS|$X86"
+            "x86-server_ppc-client|$X86|$PPC"
+            "ppc-server_x86-client|$PPC|$X86"
+            "x86-server_rv64-client|$X86|$RV64"
+            "rv64-server_x86-client|$RV64|$X86"
+          )
+
+          CONFIGS=(
+            "--disable-fec|no-fec"
+            "--disable-fec --key testkey123|no-fec-key"
+            "--fec 20:10|fec-20-10"
+            "--fec 20:10 --key testkey123|fec-20-10-key"
+          )
+
+          for entry in "${TESTS[@]}"; do
+            IFS='|' read -r pair_name server_cmd client_cmd <<< "$entry"
+            for cfg in "${CONFIGS[@]}"; do
+              IFS='|' read -r cfg_args cfg_label <<< "$cfg"
+              label="${pair_name}/${cfg_label}"
+
+              echo ""
+              echo "=========================================="
+              echo "  TESTING: $label"
+              echo "=========================================="
+
+              if bash bench/interop.sh \
+                --server-cmd "$server_cmd" \
+                --client-cmd "$client_cmd" \
+                $cfg_args \
+                --label "$label" \
+                --packets 200; then
+                PASS=$((PASS + 1))
+              else
+                FAIL=$((FAIL + 1))
+                echo "^^^ FAILED: $label ^^^"
+              fi
+            done
+          done
+
+          echo ""
+          echo "=========================================="
+          echo "  INTEROP RESULTS: $PASS passed, $FAIL failed"
+          echo "=========================================="
+
+          if [[ $FAIL -ne 0 ]]; then
+            exit 1
+          fi

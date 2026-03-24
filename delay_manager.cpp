@@ -48,9 +48,7 @@ int delay_manager_t::add(my_time_t delay, const dest_t &dest, char *data, int le
         return -1;
     }
     if (delay == 0) {
-        static char buf[buf_len];
-        delay_data.data = buf;
-        memcpy(buf, data, len);
+        delay_data.data = data;
         int ret = delay_data.handle();
         if (ret != 0) {
             mylog(log_trace, "handle() return %d\n", ret);

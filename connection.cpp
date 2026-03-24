@@ -6,6 +6,7 @@
  */
 
 #include "connection.h"
+#include "io_uring_recv.h"
 
 // const int disable_conv_clear=0;//a udp connection in the multiplexer is called conversation in this program,conv for short.
 
@@ -18,13 +19,22 @@ void server_clear_function(u64_t u64)  // used in conv_manager in server mode.fo
 {
     fd64_t fd64 = u64;
     assert(fd_manager.exist(fd64));
-    ev_io &watcher = fd_manager.get_info(fd64).io_watcher;
 
-    address_t &addr = fd_manager.get_info(fd64).addr;            //
-    assert(conn_manager.exist(addr));                            //
-    struct ev_loop *loop = conn_manager.find_insert(addr).loop;  // overkill ? should we just use ev_default_loop(0)?
+#ifdef __linux__
+    if (g_uring_ctx && g_uring_ctx->available) {
+        uring_cancel(g_uring_ctx, uring_tag(URING_TAG_SERVER_REMOTE, fd64));
+        uring_submit(g_uring_ctx);
+    } else
+#endif
+    {
+        ev_io &watcher = fd_manager.get_info(fd64).io_watcher;
 
-    ev_io_stop(loop, &watcher);
+        address_t &addr = fd_manager.get_info(fd64).addr;
+        assert(conn_manager.exist(addr));
+        struct ev_loop *loop = conn_manager.find_insert(addr).loop;
+
+        ev_io_stop(loop, &watcher);
+    }
 
     fd_manager.fd64_close(fd64);
 }

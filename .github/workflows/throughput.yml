@@ -1,0 +1,67 @@
+name: Throughput
+
+on:
+  push:
+    branches: [branch_libev, master]
+  pull_request:
+    branches: [branch_libev, master]
+
+permissions:
+  contents: write
+
+jobs:
+  throughput:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current branch
+        uses: actions/checkout@v4
+
+      - name: Fix script permissions
+        run: chmod +x bench/throughput.sh
+
+      - name: Build current binary
+        run: make all
+
+      - name: Rename current binary
+        run: mv speederv2 speederv2_current
+
+      - name: Checkout baseline
+        uses: actions/checkout@v4
+        with:
+          ref: baseline
+          path: baseline
+
+      - name: Build baseline binary
+        run: make -C baseline all
+
+      - name: Rename baseline binary
+        run: mv baseline/speederv2 speederv2_baseline
+
+      - name: Generate JSON results (current + baseline)
+        run: |
+          cur_nofec=$(./bench/throughput.sh ./speederv2_current --disable-fec --json)
+          cur_fec=$(./bench/throughput.sh ./speederv2_current --fec 20:10 --json)
+          base_nofec=$(./bench/throughput.sh ./speederv2_baseline --disable-fec --json)
+          base_fec=$(./bench/throughput.sh ./speederv2_baseline --fec 20:10 --json)
+
+          # Rename baseline entries to include "baseline/" prefix
+          base_nofec=$(echo "$base_nofec" | sed 's|"throughput/|"baseline/throughput/|')
+          base_fec=$(echo "$base_fec" | sed 's|"throughput/|"baseline/throughput/|')
+
+          printf '[%s, %s, %s, %s]\n' "$cur_nofec" "$cur_fec" "$base_nofec" "$base_fec" > throughput_results.json
+          cat throughput_results.json
+          python3 -c "import json; d=json.load(open('throughput_results.json')); [print(f\"  {e['name']}: {e['value']} {e['unit']}\") for e in d]"
+
+      - name: Store throughput results
+        if: github.ref == 'refs/heads/branch_libev'
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: UDPspeeder Throughput
+          tool: customBiggerIsBetter
+          output-file-path: throughput_results.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          alert-threshold: '115%'
+          comment-on-alert: true
+          fail-on-alert: false
+          benchmark-data-dir-path: dev/throughput

@@ -21,12 +21,16 @@ endif
 #cc_bcm2708=/home/wangyu/raspberry/tools/arm-bcm2708/gcc-linaro-arm-linux-gnueabihf-raspbian/bin/arm-linux-gnueabihf-g++ 
 
 
-SOURCES0=main.cpp log.cpp common.cpp lib/fec.cpp lib/rs.cpp crc32/Crc32.cpp packet.cpp delay_manager.cpp fd_manager.cpp connection.cpp fec_manager.cpp misc.cpp tunnel_client.cpp tunnel_server.cpp
-SOURCES=${SOURCES0} my_ev.cpp -isystem libev 
+SOURCES0=main.cpp log.cpp common.cpp lib/fec.cpp lib/rs.cpp packet.cpp packet_cook.cpp delay_manager.cpp fd_manager.cpp connection.cpp fec_manager.cpp misc.cpp tunnel_client.cpp tunnel_server.cpp io_uring_recv.cpp xor_spe.S
+SOURCES=${SOURCES0} my_ev.cpp -isystem libev
 NAME=speederv2
 
 
-FLAGS= -std=c++11   -Wall -Wextra -Wno-unused-variable -Wno-unused-parameter -Wno-missing-field-initializers ${OPT}
+FLAGS= -std=c++11   -Wall -Wextra -Wno-unused-variable -Wno-unused-parameter -Wno-missing-field-initializers -MMD -MP ${OPT}
+
+ifdef SPE
+FLAGS += -DHAVE_PPC_SPE -Wa,-mspe
+endif
 
 TARGETS=amd64 arm mips24kc_be x86  mips24kc_le
 
@@ -130,10 +134,44 @@ release2: ${TARGETS} mingw_cross mingw_cross_wepoll mac_cross
 	cp git_version.h version.txt
 	tar -zcvf ${TAR} ${NAME}.exe ${NAME}_wepoll.exe ${NAME}_mac
 
-clean:	
+clean:
 	rm -f ${TAR}
 	rm -f ${NAME} ${NAME}_cross ${NAME}.exe ${NAME}_wepoll.exe ${NAME}_mac
 	rm -f git_version.h
+	rm -f *.d bench/*.d lib/*.d crc32/*.d
+
+-include $(wildcard *.d bench/*.d lib/*.d crc32/*.d)
 
 git_version:
 	    echo "const char *gitversion = \"$(shell git rev-parse HEAD)\";" > git_version.h
+
+# --- Benchmark and test targets ---
+BENCH_SOURCES=bench/bench_main.cpp bench/bench_fec.cpp bench/bench_crc32.cpp bench/bench_packet.cpp lib/fec.cpp lib/rs.cpp crc32/Crc32.cpp packet_cook.cpp xor_spe.S
+TEST_SOURCES=bench/test_main.cpp bench/test_fec.cpp bench/test_crc32.cpp bench/test_packet.cpp lib/fec.cpp lib/rs.cpp crc32/Crc32.cpp packet_cook.cpp xor_spe.S
+BENCH_FLAGS=-std=c++11 -Wall -Wextra -Wno-unused-variable -Wno-unused-parameter -Wno-missing-field-initializers -O2 -DBENCH_EXPOSE_INTERNALS -MMD -MP
+
+ifdef SPE
+BENCH_FLAGS += -DHAVE_PPC_SPE -Wa,-mspe
+endif
+
+bench: git_version
+	${cc_local} -o bench_udpspeeder -I. -Ibench ${BENCH_SOURCES} ${BENCH_FLAGS}
+
+test: git_version
+	${cc_local} -o test_udpspeeder -I. -Ibench ${TEST_SOURCES} ${BENCH_FLAGS}
+	./test_udpspeeder
+
+bench-static: git_version
+	${cc_local} -o bench_udpspeeder_static -I. -Ibench ${BENCH_SOURCES} ${BENCH_FLAGS} -static
+
+test-static: git_version
+	${cc_local} -o test_udpspeeder_static -I. -Ibench ${TEST_SOURCES} ${BENCH_FLAGS} -static
+
+bench-cross: git_version
+	${CC} -o bench_udpspeeder_cross -I. -Ibench ${BENCH_SOURCES} ${BENCH_FLAGS} -static -lgcc_eh
+
+test-cross: git_version
+	${CC} -o test_udpspeeder_cross -I. -Ibench ${TEST_SOURCES} ${BENCH_FLAGS} -static -lgcc_eh
+
+all-cross: git_version
+	${CC} -o ${NAME}_cross -I. ${SOURCES} ${FLAGS} -lrt -static -lgcc_eh -O2

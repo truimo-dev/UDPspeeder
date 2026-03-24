@@ -270,13 +270,13 @@ struct address_t  // TODO scope id
     char *get_str();
     void to_str(char *);
 
-    inline int is_vaild() {
+    inline int is_valid() {
         u32_t ret = ((sockaddr *)&inner)->sa_family;
         return (ret == AF_INET || ret == AF_INET6);
     }
 
     inline u32_t get_type() {
-        assert(is_vaild());
+        assert(is_valid());
         u32_t ret = ((sockaddr *)&inner)->sa_family;
         return ret;
     }

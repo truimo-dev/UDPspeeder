@@ -210,6 +210,27 @@ init_mul_table()
     for (j=0; j< GF_SIZE+1; j++)
 	    gf_mul_table[0][j] = gf_mul_table[j][0] = 0;
 }
+
+/*
+ * SIMD nibble lookup tables for GF(2^8) multiply-by-constant.
+ * For each constant c, lo_table[c][i] = c*i and hi_table[c][i] = c*(i<<4).
+ * This enables PSHUFB/TBL to process 16 bytes per instruction pair.
+ */
+static gf gf_lo_table[GF_SIZE + 1][16] __attribute__((aligned(16)));
+static gf gf_hi_table[GF_SIZE + 1][16] __attribute__((aligned(16)));
+
+static void
+init_simd_tables()
+{
+    int c, i;
+    for (c = 0; c <= GF_SIZE; c++) {
+	for (i = 0; i < 16; i++) {
+	    gf_lo_table[c][i] = gf_mul_table[c][i];
+	    gf_hi_table[c][i] = gf_mul_table[c][i << 4];
+	}
+    }
+}
+
 #else	/* GF_BITS > 8 */
 static inline gf
 gf_mul(x,y)
@@ -326,27 +347,308 @@ generate_gf(void)
 
 /*
  * addmul() computes dst[] = dst[] + c * src[]
- * This is used often, so better optimize it! Currently the loop is
- * unrolled 16 times, a good value for 486 and pentium-class machines.
- * The case c=0 is also optimized, whereas c=1 is not. These
- * calls are unfrequent in my typical apps so I did not bother.
- * 
- * Note that gcc on
+ *
+ * SIMD paths use nibble decomposition: c*x = lo_table[x & 0x0F] ^ hi_table[x >> 4]
+ * where each table has 16 entries fitting in one 128-bit SIMD register.
+ * PSHUFB (x86 SSSE3) / TBL (ARM NEON) performs 16 parallel lookups.
  */
 #define addmul(dst, src, c, sz) \
     if (c != 0) addmul1(dst, src, c, sz)
+
+#if defined(__x86_64__)
+#include <immintrin.h>
+#include <cpuid.h>
+
+static int cpu_has_avx2(void)
+{
+    unsigned int eax, ebx, ecx, edx;
+
+    /* OSXSAVE — OS supports XSAVE */
+    if (!__get_cpuid(1, &eax, &ebx, &ecx, &edx))
+	return 0;
+    if (!(ecx & (1u << 27)))
+	return 0;
+
+    /* XCR0 bits 1-2 — OS saves SSE+AVX state */
+    unsigned int xcr0;
+    __asm__ __volatile__("xgetbv" : "=a"(xcr0) : "c"(0) : "edx");
+    if ((xcr0 & 0x6) != 0x6)
+	return 0;
+
+    /* AVX2: leaf 7, sub-leaf 0, EBX bit 5 */
+    if (!__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx))
+	return 0;
+    return (ebx >> 5) & 1;
+}
+
+static int cpu_has_avx512bw(void)
+{
+    unsigned int eax, ebx, ecx, edx;
+
+    /* OSXSAVE — OS supports XSAVE */
+    if (!__get_cpuid(1, &eax, &ebx, &ecx, &edx))
+	return 0;
+    if (!(ecx & (1u << 27)))
+	return 0;
+
+    /* XCR0 bits 1,2 (SSE+AVX) + 5,6,7 (opmask, ZMM_Hi256, Hi16_ZMM) */
+    unsigned int xcr0;
+    __asm__ __volatile__("xgetbv" : "=a"(xcr0) : "c"(0) : "edx");
+    if ((xcr0 & 0xE6) != 0xE6)
+	return 0;
+
+    /* AVX-512BW: leaf 7, sub-leaf 0, EBX bit 30 */
+    if (!__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx))
+	return 0;
+    return (ebx >> 30) & 1;
+}
+
+__attribute__((target("ssse3")))
+static void
+addmul1_ssse3(gf *dst, gf *src, gf c, int sz)
+{
+    __m128i tbl_lo = _mm_load_si128((const __m128i *)gf_lo_table[c]);
+    __m128i tbl_hi = _mm_load_si128((const __m128i *)gf_hi_table[c]);
+    __m128i mask   = _mm_set1_epi8(0x0F);
+
+    int i = 0;
+    /* 2x unrolled: process 32 bytes per iteration for better ILP */
+    for (; i + 32 <= sz; i += 32) {
+	__m128i x1 = _mm_loadu_si128((const __m128i *)(src + i));
+	__m128i x2 = _mm_loadu_si128((const __m128i *)(src + i + 16));
+	__m128i lo1 = _mm_shuffle_epi8(tbl_lo, _mm_and_si128(x1, mask));
+	__m128i hi1 = _mm_shuffle_epi8(tbl_hi, _mm_and_si128(_mm_srli_epi64(x1, 4), mask));
+	__m128i lo2 = _mm_shuffle_epi8(tbl_lo, _mm_and_si128(x2, mask));
+	__m128i hi2 = _mm_shuffle_epi8(tbl_hi, _mm_and_si128(_mm_srli_epi64(x2, 4), mask));
+	__m128i d1 = _mm_loadu_si128((const __m128i *)(dst + i));
+	__m128i d2 = _mm_loadu_si128((const __m128i *)(dst + i + 16));
+	_mm_storeu_si128((__m128i *)(dst + i),
+		_mm_xor_si128(d1, _mm_xor_si128(lo1, hi1)));
+	_mm_storeu_si128((__m128i *)(dst + i + 16),
+		_mm_xor_si128(d2, _mm_xor_si128(lo2, hi2)));
+    }
+    /* 16-byte tail */
+    for (; i + 16 <= sz; i += 16) {
+	__m128i x = _mm_loadu_si128((const __m128i *)(src + i));
+	__m128i lo = _mm_shuffle_epi8(tbl_lo, _mm_and_si128(x, mask));
+	__m128i hi = _mm_shuffle_epi8(tbl_hi,
+		_mm_and_si128(_mm_srli_epi64(x, 4), mask));
+	__m128i d = _mm_loadu_si128((const __m128i *)(dst + i));
+	_mm_storeu_si128((__m128i *)(dst + i),
+		_mm_xor_si128(d, _mm_xor_si128(lo, hi)));
+    }
+
+    /* scalar tail */
+    USE_GF_MULC ;
+    GF_MULC0(c) ;
+    for (; i < sz; i++)
+	GF_ADDMULC(dst[i], src[i]);
+}
+
+__attribute__((target("avx2")))
+static void
+addmul1_avx2(gf *dst, gf *src, gf c, int sz)
+{
+    __m128i tbl128_lo = _mm_load_si128((const __m128i *)gf_lo_table[c]);
+    __m128i tbl128_hi = _mm_load_si128((const __m128i *)gf_hi_table[c]);
+    __m256i tbl_lo = _mm256_broadcastsi128_si256(tbl128_lo);
+    __m256i tbl_hi = _mm256_broadcastsi128_si256(tbl128_hi);
+    __m256i mask   = _mm256_set1_epi8(0x0F);
+
+    int i = 0;
+    /* 2x unrolled: process 64 bytes per iteration for better ILP */
+    for (; i + 64 <= sz; i += 64) {
+	__m256i x1  = _mm256_loadu_si256((const __m256i *)(src + i));
+	__m256i x2  = _mm256_loadu_si256((const __m256i *)(src + i + 32));
+	__m256i lo1 = _mm256_shuffle_epi8(tbl_lo, _mm256_and_si256(x1, mask));
+	__m256i hi1 = _mm256_shuffle_epi8(tbl_hi, _mm256_and_si256(_mm256_srli_epi64(x1, 4), mask));
+	__m256i lo2 = _mm256_shuffle_epi8(tbl_lo, _mm256_and_si256(x2, mask));
+	__m256i hi2 = _mm256_shuffle_epi8(tbl_hi, _mm256_and_si256(_mm256_srli_epi64(x2, 4), mask));
+	__m256i d1  = _mm256_loadu_si256((const __m256i *)(dst + i));
+	__m256i d2  = _mm256_loadu_si256((const __m256i *)(dst + i + 32));
+	_mm256_storeu_si256((__m256i *)(dst + i),
+		_mm256_xor_si256(d1, _mm256_xor_si256(lo1, hi1)));
+	_mm256_storeu_si256((__m256i *)(dst + i + 32),
+		_mm256_xor_si256(d2, _mm256_xor_si256(lo2, hi2)));
+    }
+    /* 32-byte tail */
+    for (; i + 32 <= sz; i += 32) {
+	__m256i x  = _mm256_loadu_si256((const __m256i *)(src + i));
+	__m256i lo = _mm256_shuffle_epi8(tbl_lo, _mm256_and_si256(x, mask));
+	__m256i hi = _mm256_shuffle_epi8(tbl_hi,
+		_mm256_and_si256(_mm256_srli_epi64(x, 4), mask));
+	__m256i d  = _mm256_loadu_si256((const __m256i *)(dst + i));
+	_mm256_storeu_si256((__m256i *)(dst + i),
+		_mm256_xor_si256(d, _mm256_xor_si256(lo, hi)));
+    }
+
+    /* SSE tail: at most one 16-byte chunk */
+    if (i + 16 <= sz) {
+	__m128i mx = _mm_set1_epi8(0x0F);
+	__m128i x  = _mm_loadu_si128((const __m128i *)(src + i));
+	__m128i lo = _mm_shuffle_epi8(tbl128_lo, _mm_and_si128(x, mx));
+	__m128i hi = _mm_shuffle_epi8(tbl128_hi,
+		_mm_and_si128(_mm_srli_epi64(x, 4), mx));
+	__m128i d  = _mm_loadu_si128((const __m128i *)(dst + i));
+	_mm_storeu_si128((__m128i *)(dst + i),
+		_mm_xor_si128(d, _mm_xor_si128(lo, hi)));
+	i += 16;
+    }
+
+    /* scalar tail */
+    USE_GF_MULC ;
+    GF_MULC0(c) ;
+    for (; i < sz; i++)
+	GF_ADDMULC(dst[i], src[i]);
+}
+
+__attribute__((target("avx512bw")))
+static void
+addmul1_avx512(gf *dst, gf *src, gf c, int sz)
+{
+    __m512i tbl_lo = _mm512_broadcast_i32x4(
+	_mm_load_si128((const __m128i *)gf_lo_table[c]));
+    __m512i tbl_hi = _mm512_broadcast_i32x4(
+	_mm_load_si128((const __m128i *)gf_hi_table[c]));
+    __m512i mask   = _mm512_set1_epi8(0x0F);
+
+    int i = 0;
+    /* 2x unrolled: process 128 bytes per iteration for better ILP */
+    for (; i + 128 <= sz; i += 128) {
+	__m512i x1  = _mm512_loadu_si512(src + i);
+	__m512i x2  = _mm512_loadu_si512(src + i + 64);
+	__m512i lo1 = _mm512_shuffle_epi8(tbl_lo, _mm512_and_si512(x1, mask));
+	__m512i hi1 = _mm512_shuffle_epi8(tbl_hi,
+		_mm512_and_si512(_mm512_srli_epi64(x1, 4), mask));
+	__m512i lo2 = _mm512_shuffle_epi8(tbl_lo, _mm512_and_si512(x2, mask));
+	__m512i hi2 = _mm512_shuffle_epi8(tbl_hi,
+		_mm512_and_si512(_mm512_srli_epi64(x2, 4), mask));
+	__m512i d1  = _mm512_loadu_si512(dst + i);
+	__m512i d2  = _mm512_loadu_si512(dst + i + 64);
+	_mm512_storeu_si512(dst + i,
+		_mm512_ternarylogic_epi64(d1, lo1, hi1, 0x96));
+	_mm512_storeu_si512(dst + i + 64,
+		_mm512_ternarylogic_epi64(d2, lo2, hi2, 0x96));
+    }
+    /* 64-byte tail */
+    for (; i + 64 <= sz; i += 64) {
+	__m512i x  = _mm512_loadu_si512(src + i);
+	__m512i lo = _mm512_shuffle_epi8(tbl_lo, _mm512_and_si512(x, mask));
+	__m512i hi = _mm512_shuffle_epi8(tbl_hi,
+		_mm512_and_si512(_mm512_srli_epi64(x, 4), mask));
+	__m512i d  = _mm512_loadu_si512(dst + i);
+	_mm512_storeu_si512(dst + i,
+		_mm512_ternarylogic_epi64(d, lo, hi, 0x96));
+    }
+
+    /* AVX2 tail: at most one 32-byte chunk */
+    if (i + 32 <= sz) {
+	__m256i tbl256_lo = _mm256_broadcastsi128_si256(
+		_mm_load_si128((const __m128i *)gf_lo_table[c]));
+	__m256i tbl256_hi = _mm256_broadcastsi128_si256(
+		_mm_load_si128((const __m128i *)gf_hi_table[c]));
+	__m256i m256 = _mm256_set1_epi8(0x0F);
+	__m256i x  = _mm256_loadu_si256((const __m256i *)(src + i));
+	__m256i lo = _mm256_shuffle_epi8(tbl256_lo, _mm256_and_si256(x, m256));
+	__m256i hi = _mm256_shuffle_epi8(tbl256_hi,
+		_mm256_and_si256(_mm256_srli_epi64(x, 4), m256));
+	__m256i d  = _mm256_loadu_si256((const __m256i *)(dst + i));
+	_mm256_storeu_si256((__m256i *)(dst + i),
+		_mm256_xor_si256(d, _mm256_xor_si256(lo, hi)));
+	i += 32;
+    }
+
+    /* SSE tail: at most one 16-byte chunk */
+    if (i + 16 <= sz) {
+	__m128i mx = _mm_set1_epi8(0x0F);
+	__m128i x  = _mm_loadu_si128((const __m128i *)(src + i));
+	__m128i lo = _mm_shuffle_epi8(
+		_mm_load_si128((const __m128i *)gf_lo_table[c]),
+		_mm_and_si128(x, mx));
+	__m128i hi = _mm_shuffle_epi8(
+		_mm_load_si128((const __m128i *)gf_hi_table[c]),
+		_mm_and_si128(_mm_srli_epi64(x, 4), mx));
+	__m128i d  = _mm_loadu_si128((const __m128i *)(dst + i));
+	_mm_storeu_si128((__m128i *)(dst + i),
+		_mm_xor_si128(d, _mm_xor_si128(lo, hi)));
+	i += 16;
+    }
+
+    /* scalar tail */
+    USE_GF_MULC ;
+    GF_MULC0(c) ;
+    for (; i < sz; i++)
+	GF_ADDMULC(dst[i], src[i]);
+}
+
+static void (*addmul1_x86_fn)(gf *, gf *, gf, int) = addmul1_ssse3;
+#endif /* __x86_64__ */
+
+#if defined(__aarch64__)
+#include <arm_neon.h>
+
+static void
+addmul1_neon(gf *dst, gf *src, gf c, int sz)
+{
+    uint8x16_t tbl_lo = vld1q_u8(gf_lo_table[c]);
+    uint8x16_t tbl_hi = vld1q_u8(gf_hi_table[c]);
+    uint8x16_t mask   = vdupq_n_u8(0x0F);
+
+    int i = 0;
+    for (; i + 32 <= sz; i += 32) {
+	uint8x16_t x1 = vld1q_u8(src + i);
+	uint8x16_t x2 = vld1q_u8(src + i + 16);
+	uint8x16_t lo1 = vqtbl1q_u8(tbl_lo, vandq_u8(x1, mask));
+	uint8x16_t hi1 = vqtbl1q_u8(tbl_hi, vshrq_n_u8(x1, 4));
+	uint8x16_t lo2 = vqtbl1q_u8(tbl_lo, vandq_u8(x2, mask));
+	uint8x16_t hi2 = vqtbl1q_u8(tbl_hi, vshrq_n_u8(x2, 4));
+	uint8x16_t d1 = vld1q_u8(dst + i);
+	uint8x16_t d2 = vld1q_u8(dst + i + 16);
+	vst1q_u8(dst + i,      veorq_u8(d1, veorq_u8(lo1, hi1)));
+	vst1q_u8(dst + i + 16, veorq_u8(d2, veorq_u8(lo2, hi2)));
+    }
+    for (; i + 16 <= sz; i += 16) {
+	uint8x16_t x = vld1q_u8(src + i);
+	uint8x16_t lo = vqtbl1q_u8(tbl_lo, vandq_u8(x, mask));
+	uint8x16_t hi = vqtbl1q_u8(tbl_hi, vshrq_n_u8(x, 4));
+	uint8x16_t d = vld1q_u8(dst + i);
+	vst1q_u8(dst + i, veorq_u8(d, veorq_u8(lo, hi)));
+    }
+
+    /* scalar tail */
+    USE_GF_MULC ;
+    GF_MULC0(c) ;
+    for (; i < sz; i++)
+	GF_ADDMULC(dst[i], src[i]);
+}
+#endif /* __aarch64__ */
 
 #define UNROLL 16 /* 1, 4, 8, 16 */
 static void
 addmul1(gf *dst1, gf *src1, gf c, int sz)
 {
+#if defined(__x86_64__)
+    addmul1_x86_fn(dst1, src1, c, sz);
+#elif defined(__aarch64__)
+    addmul1_neon(dst1, src1, c, sz);
+#else
+    /*
+     * Scalar fallback for MIPS, i486, ARMv7, etc.
+     *
+     * NOT auto-vectorizable: the 256-entry table lookup (gf_mulc_table[c][src[i]])
+     * is a data-dependent gather. The nibble decomposition that makes PSHUFB/TBL
+     * work requires GF(2^8) algebraic insight no compiler performs. Pragmas like
+     * omp simd, __restrict__, and -ftree-vectorize don't help — they grant
+     * permission to vectorize but can't transform the lookup. Deliberate choice.
+     */
+    if (sz <= 0) return;
     USE_GF_MULC ;
     gf *dst = dst1, *src = src1 ;
     gf *lim = &dst[sz - UNROLL + 1] ;
 
     GF_MULC0(c) ;
 
-#if (UNROLL > 1) /* unrolling by 8/16 is quite effective on the pentium */
+#if (UNROLL > 1)
     for (; dst < lim ; dst += UNROLL, src += UNROLL ) {
 	GF_ADDMULC( dst[0] , src[0] );
 	GF_ADDMULC( dst[1] , src[1] );
@@ -371,8 +673,9 @@ addmul1(gf *dst1, gf *src1, gf c, int sz)
     }
 #endif
     lim += UNROLL - 1 ;
-    for (; dst < lim; dst++, src++ )		/* final components */
+    for (; dst < lim; dst++, src++ )
 	GF_ADDMULC( *dst , *src );
+#endif /* architecture dispatch */
 }
 
 /*
@@ -429,13 +732,12 @@ invert_mat(gf *src, int k)
     int irow, icol, row, col, i, ix ;
 
     int error = 1 ;
-    int *indxc = (int*)my_malloc(k*sizeof(int), "indxc");
-    int *indxr = (int*)my_malloc(k*sizeof(int), "indxr");
-    int *ipiv = (int*)my_malloc(k*sizeof(int), "ipiv");
-    gf *id_row = NEW_GF_MATRIX(1, k);
-    gf *temp_row = NEW_GF_MATRIX(1, k);
+    int indxc[k];
+    int indxr[k];
+    int ipiv[k];
+    gf id_row[k];
 
-    bzero(id_row, k*sizeof(gf));
+    memset(id_row, 0, (unsigned)k * sizeof(gf));
     DEB( pivloops=0; pivswaps=0 ; /* diagnostic */ )
     /*
      * ipiv marks elements already used as pivots.
@@ -540,11 +842,6 @@ found_piv:
     }
     error = 0 ;
 fail:
-    free(indxc);
-    free(indxr);
-    free(ipiv);
-    free(id_row);
-    free(temp_row);
     return error ;
 }
 
@@ -628,6 +925,15 @@ init_fec()
     init_mul_table();
     TOCK(ticks[0]);
     DDB(fprintf(stderr, "init_mul_table took %ldus\n", ticks[0]);)
+#if (GF_BITS <= 8)
+    init_simd_tables();
+#endif
+#if defined(__x86_64__)
+    if (cpu_has_avx512bw())
+	addmul1_x86_fn = addmul1_avx512;
+    else if (cpu_has_avx2())
+	addmul1_x86_fn = addmul1_avx2;
+#endif
     fec_initialized = 1 ;
 }
 
@@ -643,6 +949,9 @@ struct fec_parms {
     u_long magic ;
     int k, n ;		/* parameters of the code */
     gf *enc_matrix ;
+    gf *dec_matrix ;	/* k*k scratch for build_decode_matrix */
+    gf *dec_buf ;	/* k*dec_buf_sz scratch for fec_decode */
+    int dec_buf_sz ;	/* current sz capacity, 0 = not yet allocated */
 } ;
 
 void
@@ -655,6 +964,8 @@ fec_free(void *p0)
 	return ;
     }
     free(p->enc_matrix);
+    free(p->dec_matrix);
+    free(p->dec_buf);
     free(p);
 }
 
@@ -682,6 +993,9 @@ fec_new(int k, int n)
     retval->k = k ;
     retval->n = n ;
     retval->enc_matrix = NEW_GF_MATRIX(n, k);
+    retval->dec_matrix = NEW_GF_MATRIX(k, k);
+    retval->dec_buf = NULL ;
+    retval->dec_buf_sz = 0 ;
     retval->magic = ( ( FEC_MAGIC ^ k) ^ n) ^ (int)((long)retval->enc_matrix) ;
     tmp_m = NEW_GF_MATRIX(n, k);
     /*
@@ -792,11 +1106,11 @@ shuffle(gf *pkt[], int index[], int k)
  * indexes. The matrix must be already allocated as
  * a vector of k*k elements, in row-major order
  */
-static gf *
-build_decode_matrix(struct fec_parms *code, gf *pkt[], int index[])
+static int
+build_decode_matrix(struct fec_parms *code, gf *pkt[], int index[], gf *matrix)
 {
     int i , k = code->k ;
-    gf *p, *matrix = NEW_GF_MATRIX(k, k);
+    gf *p ;
 
     TICK(ticks[9]);
     for (i = 0, p = matrix ; i < k ; i++, p += k ) {
@@ -807,21 +1121,19 @@ build_decode_matrix(struct fec_parms *code, gf *pkt[], int index[])
 	} else
 #endif
 	if (index[i] < code->n )
-	    bcopy( &(code->enc_matrix[index[i]*k]), p, k*sizeof(gf) ); 
+	    bcopy( &(code->enc_matrix[index[i]*k]), p, k*sizeof(gf) );
 	else {
 	    fprintf(stderr, "decode: invalid index %d (max %d)\n",
 		index[i], code->n - 1 );
-	    free(matrix) ;
-	    return NULL ;
+	    return -1 ;
 	}
     }
     TICK(ticks[9]);
     if (invert_mat(matrix, k)) {
-	free(matrix);
-	matrix = NULL ;
+	return -1 ;
     }
     TOCK(ticks[9]);
-    return matrix ;
+    return 0 ;
 }
 
 /*
@@ -841,29 +1153,32 @@ fec_decode(void *code0, void *pkt0[], int index[], int sz)
 {
 	struct fec_parms * code=(struct fec_parms*)code0;
 	gf **pkt=(gf**)pkt0;
-    gf *m_dec ; 
-    gf **new_pkt ;
     int row, col , k = code->k ;
+    gf *new_pkt[k] ;
 
     if (GF_BITS > 8)
 	sz /= 2 ;
 
     if (shuffle(pkt, index, k))	/* error if true */
 	return 1 ;
-    m_dec = build_decode_matrix(code, pkt, index);
-
-    if (m_dec == NULL)
+    if (build_decode_matrix(code, pkt, index, code->dec_matrix))
 	return 1 ; /* error */
+
+    /* ensure decode scratch buffer is large enough */
+    if (code->dec_buf_sz < sz) {
+	free(code->dec_buf);
+	code->dec_buf = (gf *)my_malloc(k * sz * sizeof(gf), "dec_buf");
+	code->dec_buf_sz = sz ;
+    }
     /*
      * do the actual decoding
      */
-    new_pkt = (gf** )my_malloc (k * sizeof (gf * ), "new pkt pointers" );
     for (row = 0 ; row < k ; row++ ) {
 	if (index[row] >= k) {
-	    new_pkt[row] = (gf*)my_malloc (sz * sizeof (gf), "new pkt buffer" );
+	    new_pkt[row] = code->dec_buf + row * sz ;
 	    bzero(new_pkt[row], sz * sizeof(gf) ) ;
 	    for (col = 0 ; col < k ; col++ )
-		addmul(new_pkt[row], pkt[col], m_dec[row*k + col], sz) ;
+		addmul(new_pkt[row], pkt[col], code->dec_matrix[row*k + col], sz) ;
 	}
     }
     /*
@@ -872,11 +1187,8 @@ fec_decode(void *code0, void *pkt0[], int index[], int sz)
     for (row = 0 ; row < k ; row++ ) {
 	if (index[row] >= k) {
 	    bcopy(new_pkt[row], pkt[row], sz*sizeof(gf));
-	    free(new_pkt[row]);
 	}
     }
-    free(new_pkt);
-    free(m_dec);
 
     return 0;
 }
@@ -915,3 +1227,20 @@ test_gf()
     }
 }
 #endif /* TEST */
+
+#ifdef BENCH_EXPOSE_INTERNALS
+void bench_addmul1(gf *dst, gf *src, gf c, int sz) {
+    addmul1(dst, src, c, sz);
+}
+const char *bench_addmul1_impl() {
+#if defined(__x86_64__)
+    if (addmul1_x86_fn == addmul1_avx512) return "avx512bw";
+    if (addmul1_x86_fn == addmul1_avx2) return "avx2";
+    return "ssse3";
+#elif defined(__aarch64__)
+    return "neon";
+#else
+    return "scalar";
+#endif
+}
+#endif

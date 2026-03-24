@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run tests
+        run: make test
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: x86_64
+            packages: ""
+            target: all
+            make_args: ""
+            src_bin: speederv2
+            release_bin: speederv2_linux_x86_64
+          - name: aarch64
+            packages: g++-aarch64-linux-gnu
+            target: all-cross
+            make_args: "CC=aarch64-linux-gnu-g++"
+            src_bin: speederv2_cross
+            release_bin: speederv2_linux_aarch64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        if: matrix.packages != ''
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.packages }}
+
+      - name: Build production binary
+        run: make ${{ matrix.target }} ${{ matrix.make_args }}
+
+      - name: Verify binary
+        run: file ${{ matrix.src_bin }}
+
+      - name: Rename binary
+        run: mv ${{ matrix.src_bin }} ${{ matrix.release_bin }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.release_bin }}
+          path: ${{ matrix.release_bin }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true

@@ -13,7 +13,7 @@
 #include "lib/rs.h"
 
 const int max_blob_packet_num = 30000;      // how many packet can be contain in a blob_t ,can be set very large
-const u32_t anti_replay_buff_size = 30000;  // can be set very large
+const u32_t anti_replay_table_size = 32768;  // power of 2 for fast modulo
 
 const int max_fec_packet_num = 255;  // this is the limitation of the rs lib
 extern u32_t fec_buff_num;
@@ -182,55 +182,29 @@ struct fec_parameter_t {
 extern fec_parameter_t g_fec_par;
 // extern int dynamic_update_fec;
 
-const int anti_replay_timeout = 120 * 1000;  // 120s
-
 struct anti_replay_t {
-    struct info_t {
-        my_time_t my_time;
-        int index;
-    };
+    /* Direct-mapped table: slot = seq & MASK, stores the seq that owns it.
+     * is_valid: table[slot] != seq → valid (not yet seen).
+     * set_invaild: table[slot] = seq.
+     * Old entries naturally evicted when a new seq maps to the same slot.
+     * With 32K slots and monotonically increasing seqs, effective window
+     * is ~32K groups — comparable to the old 30K ring buffer. */
+    static const u32_t TABLE_MASK = anti_replay_table_size - 1;
 
-    u64_t replay_buffer[anti_replay_buff_size];
-    unordered_map<u32_t, info_t> mp;
-    int index;
+    u32_t table[anti_replay_table_size];
+
     anti_replay_t() {
         clear();
     }
     int clear() {
-        memset(replay_buffer, -1, sizeof(replay_buffer));
-        mp.clear();
-        mp.rehash(anti_replay_buff_size * 3);
-        index = 0;
+        memset(table, 0xFF, sizeof(table));
         return 0;
     }
     void set_invaild(u32_t seq) {
-        if (is_vaild(seq) == 0) {
-            mylog(log_trace, "seq %u exist\n", seq);
-            // assert(mp.find(seq)!=mp.end());
-            // mp[seq].my_time=get_current_time_rough();
-            return;
-        }
-        if (replay_buffer[index] != u64_t(i64_t(-1))) {
-            assert(mp.find(replay_buffer[index]) != mp.end());
-            mp.erase(replay_buffer[index]);
-        }
-        replay_buffer[index] = seq;
-        assert(mp.find(seq) == mp.end());
-        mp[seq].my_time = get_current_time();
-        mp[seq].index = index;
-        index++;
-        if (index == int(anti_replay_buff_size)) index = 0;
+        table[seq & TABLE_MASK] = seq;
     }
-    int is_vaild(u32_t seq) {
-        if (mp.find(seq) == mp.end()) return 1;
-
-        if (get_current_time() - mp[seq].my_time > anti_replay_timeout) {
-            replay_buffer[mp[seq].index] = u64_t(i64_t(-1));
-            mp.erase(seq);
-            return 1;
-        }
-
-        return 0;
+    int is_valid(u32_t seq) {
+        return table[seq & TABLE_MASK] != seq;
     }
 };
 
@@ -374,18 +348,45 @@ struct fec_data_t {
     int len;
 };
 struct fec_group_t {
-    int type = -1;
-    int data_num = -1;
-    int redundant_num = -1;
-    int len = -1;
-    int fec_done = 0;
-    // int data_counter=0;
-    map<int, int> group_mp;
+    u32_t seq;           /* owner seq, 0xFFFFFFFF = empty slot */
+    int type;
+    int data_num;
+    int redundant_num;
+    int len;
+    int fec_done;
+    int shard_count;
+    u32_t shard_bitmap[8];  /* 256 bits — replaces 1KB memset of shard_idx */
+    int shard_idx[max_fec_packet_num + 1];  /* only valid where bitmap bit is set */
+
+    void init(u32_t new_seq) {
+        seq = new_seq;
+        type = -1;
+        data_num = -1;
+        redundant_num = -1;
+        len = -1;
+        fec_done = 0;
+        shard_count = 0;
+        memset(shard_bitmap, 0, sizeof(shard_bitmap));  /* 32 bytes vs old 1024 */
+    }
+    int has_shard(int i) const {
+        return (shard_bitmap[i >> 5] >> (i & 31)) & 1;
+    }
+    void set_shard(int i, int val) {
+        shard_bitmap[i >> 5] |= (1u << (i & 31));
+        shard_idx[i] = val;
+    }
 };
 class fec_decode_manager_t : not_copy_able_t {
     anti_replay_t anti_replay;
     fec_data_t *fec_data = 0;
-    unordered_map<u32_t, fec_group_t> mp;
+
+    /* Direct-mapped group table: slot = seq & group_table_mask.
+     * Monotonically increasing seqs guarantee no two concurrent groups
+     * collide (table_size > max concurrent groups ≈ fec_buff_num). */
+    fec_group_t *group_table = 0;
+    u32_t group_table_size;
+    u32_t group_table_mask;
+
     blob_decode_t blob_decode;
 
     int index;
@@ -398,28 +399,45 @@ class fec_decode_manager_t : not_copy_able_t {
     char *output_s_arr_buf[max_fec_packet_num + 100];  // only for type=1,for type=0 the buf inside blot_t is used
     int output_len_arr_buf[max_fec_packet_num + 100];  // same
 
+    fec_group_t &group_find_or_create(u32_t seq) {
+        fec_group_t &g = group_table[seq & group_table_mask];
+        if (g.seq != seq) g.init(seq);
+        return g;
+    }
+    fec_group_t *group_find(u32_t seq) {
+        fec_group_t &g = group_table[seq & group_table_mask];
+        return (g.seq == seq) ? &g : 0;
+    }
+    void group_erase(u32_t seq) {
+        fec_group_t &g = group_table[seq & group_table_mask];
+        if (g.seq == seq) g.seq = 0xFFFFFFFF;
+    }
+
    public:
     fec_decode_manager_t() {
+        /* Table size: next power of 2 >= fec_buff_num * 2 */
+        group_table_size = 1;
+        while (group_table_size < fec_buff_num * 2) group_table_size <<= 1;
+        group_table_mask = group_table_size - 1;
+
         fec_data = new fec_data_t[fec_buff_num + 5];
+        group_table = new fec_group_t[group_table_size];
         assert(fec_data != 0);
+        assert(group_table != 0);
         clear();
     }
-    /*
-    fec_decode_manager_t(const fec_decode_manager_t &b)
-    {
-            assert(0==1);//not allowed to copy
-    }*/
     ~fec_decode_manager_t() {
         mylog(log_debug, "fec_decode_manager destroyed\n");
         if (fec_data != 0) {
             mylog(log_debug, "fec_data freed\n");
             delete[] fec_data;
         }
+        delete[] group_table;
     }
     int clear() {
         anti_replay.clear();
-        mp.clear();
-        mp.rehash(fec_buff_num * 3);
+        for (u32_t i = 0; i < group_table_size; i++)
+            group_table[i].seq = 0xFFFFFFFF;
 
         for (int i = 0; i < (int)fec_buff_num; i++)
             fec_data[i].used = 0;
