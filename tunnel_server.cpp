@@ -12,6 +12,12 @@ static void conn_timer_cb(struct ev_loop *loop, struct ev_timer *watcher, int re
 static void fec_encode_cb(struct ev_loop *loop, struct ev_timer *watcher, int revents);
 static void remote_cb(struct ev_loop *loop, struct ev_io *watcher, int revents);
 
+#if defined(__linux__) && !defined(__ANDROID__)
+static uring_ctx_t server_uring_ctx;
+static int server_local_listen_fd;
+static void server_uring_drain(struct ev_loop *loop);
+#endif
+
 enum tmp_mode_t { is_from_remote = 0,
                   is_fec_timeout,
                   is_conn_timer };
@@ -339,10 +345,6 @@ static void global_timer_cb(struct ev_loop *loop, struct ev_timer *watcher, int 
 }
 
 #if defined(__linux__) && !defined(__ANDROID__)
-static uring_ctx_t server_uring_ctx;
-static int server_local_listen_fd;
-static void server_uring_drain(struct ev_loop *loop);
-
 static void server_uring_drain(struct ev_loop *loop) {
     uring_ctx_t *ctx = &server_uring_ctx;
     int local_listen_fd = server_local_listen_fd;

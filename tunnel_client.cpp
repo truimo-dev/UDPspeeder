@@ -1,6 +1,12 @@
 #include "tunnel.h"
 #include "io_uring_recv.h"
 
+#if defined(__linux__) && !defined(__ANDROID__)
+static uring_ctx_t client_uring_ctx;
+static conn_info_t *client_uring_conn_info;
+static void client_uring_drain(struct ev_loop *loop);
+#endif
+
 static void client_process_local_packet(conn_info_t &conn_info, char *data, int data_len,
                                          struct sockaddr *src_addr, socklen_t src_addr_len) {
     fd64_t &remote_fd64 = conn_info.remote_fd64;
@@ -226,12 +232,6 @@ static void conn_timer_cb(struct ev_loop *loop, struct ev_timer *watcher, int re
         delay_send_batch(out_n, out_delay, dest, out_arr, out_len);
     }
 }
-
-#if defined(__linux__) && !defined(__ANDROID__)
-static uring_ctx_t client_uring_ctx;
-static conn_info_t *client_uring_conn_info;
-static void client_uring_drain(struct ev_loop *loop);
-#endif
 
 static void prepare_cb(struct ev_loop *loop, struct ev_prepare *watcher, int revents) {
     assert(!(revents & EV_ERROR));
