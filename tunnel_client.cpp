@@ -42,7 +42,7 @@ void data_from_local_or_fec_timeout(conn_info_t &conn_info, int is_time_out) {
     } else  // events[idx].data.u64 == (u64_t)local_listen_fd
     {
         mylog(log_trace, "events[idx].data.u64 == (u64_t)local_listen_fd\n");
-        address_t::storage_t udp_new_addr_in = {0};
+        address_t::storage_t udp_new_addr_in = {};
         socklen_t udp_new_addr_len = sizeof(address_t::storage_t);
         if ((data_len = recvfrom(local_listen_fd, data, max_data_len + 1, 0,
                                  (struct sockaddr *)&udp_new_addr_in, &udp_new_addr_len)) == -1) {

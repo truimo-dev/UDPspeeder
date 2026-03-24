@@ -7,6 +7,7 @@
 #include "rs.h"
 #include "stdlib.h"
 #include "string.h"
+#include <vector>
 
 void rs_encode(void *code, char *data[], int size) {
     int k = get_k(code);
@@ -21,7 +22,7 @@ void rs_encode(void *code, char *data[], int size) {
 int rs_decode(void *code, char *data[], int size) {
     int k = get_k(code);
     int n = get_n(code);
-    int index[n];
+    std::vector<int> index(n);
     int count = 0;
     for (int i = 0; i < n; i++) {
         if (data[i] != 0) {
@@ -36,7 +37,7 @@ int rs_decode(void *code, char *data[], int size) {
         else
             data[i] = 0;
     }
-    return fec_decode(code, (void **)data, index, size);
+    return fec_decode(code, (void **)data, index.data(), size);
 }
 
 static void *(*table)[256] = 0;

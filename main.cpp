@@ -139,7 +139,7 @@ int main(int argc, char *argv[]) {
     delay_manager.set_capacity(delay_capacity);
 
     if (strlen(tun_dev) == 0) {
-        sprintf(tun_dev, "tun%u", get_fake_random_number() % 1000);
+        snprintf(tun_dev, sizeof(tun_dev), "tun%u", get_fake_random_number() % 1000);
     }
 
     if (program_mode == client_mode) {

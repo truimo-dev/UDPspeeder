@@ -136,7 +136,7 @@ int get_sock_errno() {
 #else
 char *get_sock_error() {
     static char buf[1000];
-    sprintf(buf, "%d:%s", errno, strerror(errno));
+    snprintf(buf, sizeof(buf), "%d:%s", errno, strerror(errno));
     return buf;
 }
 int get_sock_errno() {
@@ -307,9 +307,9 @@ void address_t::to_str(char *s) {
 
     ip_addr[max_addr_len - 1] = 0;
     if (get_type() == AF_INET6) {
-        sprintf(s, "[%s]:%u", ip_addr, (u32_t)port);
+        snprintf(s, sizeof(s), "[%s]:%u", ip_addr, (u32_t)port);
     } else {
-        sprintf(s, "%s:%u", ip_addr, (u32_t)port);
+        snprintf(s, sizeof(s), "%s:%u", ip_addr, (u32_t)port);
     }
 
     // return res;
@@ -334,11 +334,7 @@ char *address_t::get_ip() {
     }
 
     ip_addr[max_addr_len - 1] = 0;
-    if (get_type() == AF_INET6) {
-        sprintf(s, "%s", ip_addr);
-    } else {
-        sprintf(s, "%s", ip_addr);
-    }
+    snprintf(s, sizeof(s), "%s", ip_addr);
 
     return s;
 }

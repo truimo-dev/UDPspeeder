@@ -128,7 +128,7 @@ static void local_listen_cb(struct ev_loop *loop, struct ev_io *watcher, int rev
     mylog(log_trace, "events[idx].data.u64 == (u64_t)local_listen_fd\n");
     char data[buf_len];
     int data_len;
-    address_t::storage_t udp_new_addr_in = {0};
+    address_t::storage_t udp_new_addr_in = {};
     socklen_t udp_new_addr_len = sizeof(address_t::storage_t);
     if ((data_len = recvfrom(local_listen_fd, data, max_data_len + 1, 0,
                              (struct sockaddr *)&udp_new_addr_in, &udp_new_addr_len)) == -1) {

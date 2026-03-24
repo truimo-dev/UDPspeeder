@@ -142,7 +142,7 @@ struct fec_parameter_t {
         char tmp_buf[100];
         assert(rs_cnt >= 1);
         for (int i = 0; i < rs_cnt; i++) {
-            sprintf(tmp_buf, "%d:%d", int(rs_par[i].x), int(rs_par[i].y));
+            snprintf(tmp_buf, sizeof(tmp_buf), "%d:%d", int(rs_par[i].x), int(rs_par[i].y));
             if (i != 0)
                 tmp_string += ",";
             tmp_string += tmp_buf;
