@@ -1,4 +1,5 @@
 cmake-build-debug/
+speederv2.dSYM/
 
 # Binaries and executables
 speederv2
@@ -8,3 +9,7 @@ speederv2_*
 git_version.h
 
 .idea/
+
+# misc
+.DS_Store
+*.pem
