@@ -103,6 +103,13 @@ buf_ring_add_deferred(uring_ctx_t *ctx, int buf_id)
 int
 uring_init(uring_ctx_t *ctx, int queue_depth, int buf_count, int buf_size)
 {
+    /* The current raw io_uring receive path is not stable enough across
+       deployed Linux hosts. Keep the mature recvfrom/recv fallback as the
+       default behavior for now. */
+    mylog(log_info, "io_uring: disabled at build-time pending further fixes\n");
+    ctx->available = 0;
+    return -1;
+
     if (getenv("UDPSPEEDER_NO_URING")) {
         mylog(log_info, "io_uring: disabled by UDPSPEEDER_NO_URING\n");
         ctx->available = 0;
