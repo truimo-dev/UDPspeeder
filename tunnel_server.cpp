@@ -219,7 +219,7 @@ static void server_process_tunnel_packet(struct ev_loop *loop, int local_listen_
             conn_info.conv_manager.s.insert_conv(conv, fd64);
             fd_manager.get_info(fd64).addr = addr;
 
-#ifdef __linux__
+#if defined(__linux__) && !defined(__ANDROID__)
             if (g_uring_ctx && g_uring_ctx->available) {
                 uring_add_multishot_recv(g_uring_ctx, new_udp_fd,
                                           uring_tag(URING_TAG_SERVER_REMOTE, fd64));
@@ -317,16 +317,11 @@ static void conn_timer_cb(struct ev_loop *loop, struct ev_timer *watcher, int re
     data_from_remote_or_fec_timeout_or_conn_timer(conn_info, 0, is_conn_timer);
 }
 
-static void server_uring_drain(struct ev_loop *loop);
-
 static void prepare_cb(struct ev_loop *loop, struct ev_prepare *watcher, int revents) {
     assert(!(revents & EV_ERROR));
 
     delay_manager.check();
 }
-
-#ifdef __linux__
-#endif
 
 static void global_timer_cb(struct ev_loop *loop, struct ev_timer *watcher, int revents) {
     assert(!(revents & EV_ERROR));
@@ -337,9 +332,10 @@ static void global_timer_cb(struct ev_loop *loop, struct ev_timer *watcher, int 
     mylog(log_trace, "events[idx].data.u64==(u64_t)timer.get_timer_fd()\n");
 }
 
-#ifdef __linux__
+#if defined(__linux__) && !defined(__ANDROID__)
 static uring_ctx_t server_uring_ctx;
 static int server_local_listen_fd;
+static void server_uring_drain(struct ev_loop *loop);
 
 static void server_uring_drain(struct ev_loop *loop) {
     uring_ctx_t *ctx = &server_uring_ctx;
@@ -462,7 +458,7 @@ int tunnel_server_event_loop() {
     //	myexit(-1);
     // }
     int use_uring = 0;
-#ifdef __linux__
+#if defined(__linux__) && !defined(__ANDROID__)
     server_local_listen_fd = local_listen_fd;
     if (uring_init(&server_uring_ctx, 64, 256, buf_len) == 0) {
         g_uring_ctx = &server_uring_ctx;

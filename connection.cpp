@@ -20,7 +20,7 @@ void server_clear_function(u64_t u64)  // used in conv_manager in server mode.fo
     fd64_t fd64 = u64;
     assert(fd_manager.exist(fd64));
 
-#ifdef __linux__
+#if defined(__linux__) && !defined(__ANDROID__)
     if (g_uring_ctx && g_uring_ctx->available) {
         uring_cancel(g_uring_ctx, uring_tag(URING_TAG_SERVER_REMOTE, fd64));
         uring_submit(g_uring_ctx);

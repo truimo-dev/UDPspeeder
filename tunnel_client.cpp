@@ -227,7 +227,7 @@ static void conn_timer_cb(struct ev_loop *loop, struct ev_timer *watcher, int re
     }
 }
 
-#ifdef __linux__
+#if defined(__linux__) && !defined(__ANDROID__)
 static uring_ctx_t client_uring_ctx;
 static conn_info_t *client_uring_conn_info;
 static void client_uring_drain(struct ev_loop *loop);
@@ -240,7 +240,7 @@ static void prepare_cb(struct ev_loop *loop, struct ev_prepare *watcher, int rev
 }
 
 
-#ifdef __linux__
+#if defined(__linux__) && !defined(__ANDROID__)
 
 static void client_uring_drain(struct ev_loop *loop) {
     conn_info_t &conn_info = *client_uring_conn_info;
@@ -351,7 +351,7 @@ int tunnel_client_event_loop() {
     mylog(log_debug, "remote_fd64=%llu\n", remote_fd64);
 
     int use_uring = 0;
-#ifdef __linux__
+#if defined(__linux__) && !defined(__ANDROID__)
     if (uring_init(&client_uring_ctx, 64, 256, buf_len) == 0) {
         g_uring_ctx = &client_uring_ctx;
         client_uring_conn_info = &conn_info;

@@ -3,7 +3,7 @@
 
 #include "common.h"
 
-#ifdef __linux__
+#if defined(__linux__) && !defined(__ANDROID__)
 
 #include <stdint.h>
 #include <sys/socket.h>
@@ -127,13 +127,26 @@ void uring_buf_ring_commit(uring_ctx_t *ctx);
 /* Global pointer — set in tunnel event loop, used by connection.cpp cleanup */
 extern uring_ctx_t *g_uring_ctx;
 
-#else /* !__linux__ */
+#else /* !(__linux__ && !__ANDROID__) */
 
 /* Stubs for non-Linux — always unavailable */
 struct uring_recv_buf_t { char *data; int len; int buf_id; };
 struct uring_ctx_t { int available; };
 static inline int uring_init(uring_ctx_t *ctx, int, int, int) { ctx->available = 0; return -1; }
 static inline void uring_destroy(uring_ctx_t *) {}
+static inline int uring_add_multishot_recvmsg(uring_ctx_t *, int, uint64_t) { return -1; }
+static inline int uring_add_multishot_recv(uring_ctx_t *, int, uint64_t) { return -1; }
+static inline int uring_cancel(uring_ctx_t *, uint64_t) { return -1; }
+static inline int uring_submit(uring_ctx_t *) { return -1; }
+static inline unsigned uring_cq_ready(uring_ctx_t *) { return 0; }
+static inline void *uring_cqe_at(uring_ctx_t *, unsigned) { return 0; }
+static inline void uring_cq_advance(uring_ctx_t *, unsigned) {}
+static inline int uring_submit_and_flush(uring_ctx_t *) { return -1; }
+static inline void uring_flush(uring_ctx_t *) {}
+static inline int uring_parse_recvmsg_cqe(uring_ctx_t *, void *, uring_recv_buf_t *) { return -1; }
+static inline int uring_parse_recv_cqe(uring_ctx_t *, void *, uring_recv_buf_t *) { return -1; }
+static inline void uring_recycle_buf(uring_ctx_t *, int) {}
+static inline void uring_buf_ring_commit(uring_ctx_t *) {}
 
 /* Tag helpers still available for compilation */
 static inline uint64_t uring_tag(uint8_t type, uint64_t payload) {
@@ -146,5 +159,5 @@ static inline uint64_t uring_tag(uint8_t type, uint64_t payload) {
 
 extern uring_ctx_t *g_uring_ctx;
 
-#endif /* __linux__ */
+#endif /* __linux__ && !__ANDROID__ */
 #endif /* IO_URING_RECV_H_ */

@@ -21,8 +21,20 @@ endif
 #cc_bcm2708=/home/wangyu/raspberry/tools/arm-bcm2708/gcc-linaro-arm-linux-gnueabihf-raspbian/bin/arm-linux-gnueabihf-g++ 
 
 
-SOURCES0=main.cpp log.cpp common.cpp lib/fec.cpp lib/rs.cpp packet.cpp packet_cook.cpp delay_manager.cpp fd_manager.cpp connection.cpp fec_manager.cpp misc.cpp tunnel_client.cpp tunnel_server.cpp io_uring_recv.cpp xor_spe.S
+SOURCES_BASE=main.cpp log.cpp common.cpp lib/fec.cpp lib/rs.cpp packet.cpp packet_cook.cpp delay_manager.cpp fd_manager.cpp connection.cpp fec_manager.cpp misc.cpp tunnel_client.cpp tunnel_server.cpp
+SOURCES_LINUX=io_uring_recv.cpp
+SOURCES_SPE=xor_spe.S
+
+SOURCES0=${SOURCES_BASE}
+ifeq ($(host_os),Linux)
+SOURCES0+= ${SOURCES_LINUX}
+endif
+ifdef SPE
+SOURCES0+= ${SOURCES_SPE}
+endif
 SOURCES=${SOURCES0} my_ev.cpp -isystem libev
+SOURCES_ANDROID=${SOURCES_BASE} io_uring_recv.cpp my_ev.cpp -isystem libev
+SOURCES_MACOS=${SOURCES_BASE} my_ev.cpp -isystem libev
 NAME=speederv2
 
 
@@ -102,10 +114,10 @@ arm:git_version
 	${cc_arm}   -o ${NAME}_$@      -I. ${SOURCES} ${FLAGS} -lrt -static -O2 -lgcc_eh
 
 android_arm64:git_version
-	${android_tc} -o ${NAME}_$@    -I. ${SOURCES} ${FLAGS} -O2 -fPIE -pie -pthread -static-libstdc++
+	${android_tc} -o ${NAME}_$@    -I. ${SOURCES_ANDROID} ${FLAGS} -O2 -fPIE -pie -pthread -static-libstdc++
 
 macos_arm64:git_version
-	${macos_arm64_cxx} -o ${NAME}_$@ -I. ${SOURCES} ${FLAGS} -O2 -arch arm64
+	${macos_arm64_cxx} -o ${NAME}_$@ -I. ${SOURCES_MACOS} ${FLAGS} -O2 -arch arm64
 
 linux_amd64:git_version
 	${linux_amd64_cxx} -o ${NAME}_$@ -I. ${SOURCES} ${FLAGS} -O2 -pthread -lrt -static-libstdc++

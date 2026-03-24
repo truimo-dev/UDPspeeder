@@ -2,7 +2,7 @@
 
 uring_ctx_t *g_uring_ctx = NULL;
 
-#ifdef __linux__
+#if defined(__linux__) && !defined(__ANDROID__)
 
 #include "log.h"
 #include <sys/mman.h>

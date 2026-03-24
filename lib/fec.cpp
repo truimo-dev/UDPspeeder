@@ -32,6 +32,8 @@
  * OF SUCH DAMAGE.
  */
 
+#include <vector>
+
 /*
  * The following parameter defines how many bits are used for
  * field elements. The code supports any value from 2 to 16
@@ -732,12 +734,12 @@ invert_mat(gf *src, int k)
     int irow, icol, row, col, i, ix ;
 
     int error = 1 ;
-    int indxc[k];
-    int indxr[k];
-    int ipiv[k];
-    gf id_row[k];
+    std::vector<int> indxc(k);
+    std::vector<int> indxr(k);
+    std::vector<int> ipiv(k);
+    std::vector<gf> id_row(k);
 
-    memset(id_row, 0, (unsigned)k * sizeof(gf));
+    memset(id_row.data(), 0, (unsigned)k * sizeof(gf));
     DEB( pivloops=0; pivswaps=0 ; /* diagnostic */ )
     /*
      * ipiv marks elements already used as pivots.
@@ -817,7 +819,7 @@ found_piv:
 	 * we can optimize the addmul).
 	 */
 	id_row[icol] = 1;
-		if (memcmp(pivot_row, id_row, k*sizeof(gf)) != 0) {
+		if (memcmp(pivot_row, id_row.data(), k*sizeof(gf)) != 0) {
 	    for (p = src, ix = 0 ; ix < k ; ix++, p += k ) {
 		if (ix != icol) {
 		    c = p[icol] ;
@@ -1154,7 +1156,7 @@ fec_decode(void *code0, void *pkt0[], int index[], int sz)
 	struct fec_parms * code=(struct fec_parms*)code0;
 	gf **pkt=(gf**)pkt0;
     int row, col , k = code->k ;
-    gf *new_pkt[k] ;
+    std::vector<gf *> new_pkt(k);
 
     if (GF_BITS > 8)
 	sz /= 2 ;
