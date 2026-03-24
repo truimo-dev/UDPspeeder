@@ -467,19 +467,15 @@ int tunnel_server_event_loop() {
     //	mylog(log_fatal,"add  udp_listen_fd error\n");
     //	myexit(-1);
     // }
-    int use_uring = 0;
 #if defined(__linux__) && !defined(__ANDROID__)
     server_local_listen_fd = local_listen_fd;
     if (uring_init(&server_uring_ctx, 64, 256, buf_len) == 0) {
         g_uring_ctx = &server_uring_ctx;
         static struct ev_io uring_watcher;
         ev_io_init(&uring_watcher, server_uring_cb, server_uring_ctx.ring_fd, EV_READ);
-        if (uring_add_multishot_recvmsg(&server_uring_ctx, local_listen_fd,
-                                        uring_tag(URING_TAG_SERVER_LOCAL, 0)) == 0 &&
-            uring_submit(&server_uring_ctx) >= 0) {
+        if (uring_submit(&server_uring_ctx) >= 0) {
             ev_io_start(loop, &uring_watcher);
-            use_uring = 1;
-            mylog(log_info, "io_uring: active for server sockets\n");
+            mylog(log_info, "io_uring: active for server remote sockets; local listener uses recvfrom fallback\n");
         } else {
             mylog(log_warn, "io_uring: initial submit failed, using recvfrom fallback\n");
             g_uring_ctx = NULL;
@@ -490,8 +486,7 @@ int tunnel_server_event_loop() {
 
     struct ev_io local_listen_watcher;
     ev_io_init(&local_listen_watcher, local_listen_cb, local_listen_fd, EV_READ);
-    if (!use_uring)
-        ev_io_start(loop, &local_listen_watcher);
+    ev_io_start(loop, &local_listen_watcher);
 
     delay_manager.set_loop_and_cb(loop, delay_manager_cb);
 

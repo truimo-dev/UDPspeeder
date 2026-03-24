@@ -358,21 +358,19 @@ int tunnel_client_event_loop() {
 
     mylog(log_debug, "remote_fd64=%llu\n", remote_fd64);
 
-    int use_uring = 0;
+    int use_uring_remote = 0;
 #if defined(__linux__) && !defined(__ANDROID__)
     if (uring_init(&client_uring_ctx, 64, 256, buf_len) == 0) {
         g_uring_ctx = &client_uring_ctx;
         client_uring_conn_info = &conn_info;
         static struct ev_io uring_watcher;
         ev_io_init(&uring_watcher, client_uring_cb, client_uring_ctx.ring_fd, EV_READ);
-        if (uring_add_multishot_recvmsg(&client_uring_ctx, local_listen_fd,
-                                        uring_tag(URING_TAG_CLIENT_LOCAL, 0)) == 0 &&
-            uring_add_multishot_recv(&client_uring_ctx, remote_fd,
+        if (uring_add_multishot_recv(&client_uring_ctx, remote_fd,
                                      uring_tag(URING_TAG_CLIENT_REMOTE, 0)) == 0 &&
             uring_submit(&client_uring_ctx) >= 0) {
             ev_io_start(loop, &uring_watcher);
-            use_uring = 1;
-            mylog(log_info, "io_uring: active for client sockets\n");
+            use_uring_remote = 1;
+            mylog(log_info, "io_uring: active for client remote socket; local listener uses recvfrom fallback\n");
         } else {
             mylog(log_warn, "io_uring: initial submit failed, using recvfrom fallback\n");
             g_uring_ctx = NULL;
@@ -385,14 +383,13 @@ int tunnel_client_event_loop() {
     struct ev_io local_listen_watcher;
     local_listen_watcher.data = &conn_info;
     ev_io_init(&local_listen_watcher, local_listen_cb, local_listen_fd, EV_READ);
-    if (!use_uring)
-        ev_io_start(loop, &local_listen_watcher);
+    ev_io_start(loop, &local_listen_watcher);
 
     struct ev_io remote_watcher;
     remote_watcher.data = &conn_info;
     remote_watcher.u64 = remote_fd64;
     ev_io_init(&remote_watcher, remote_cb, remote_fd, EV_READ);
-    if (!use_uring)
+    if (!use_uring_remote)
         ev_io_start(loop, &remote_watcher);
 
     // ev.events = EPOLLIN;
