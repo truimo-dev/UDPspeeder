@@ -237,6 +237,12 @@ static void prepare_cb(struct ev_loop *loop, struct ev_prepare *watcher, int rev
     assert(!(revents & EV_ERROR));
 
     delay_manager.check();
+
+#if defined(__linux__) && !defined(__ANDROID__)
+    if (client_uring_ctx.available) {
+        client_uring_drain(loop);
+    }
+#endif
 }
 
 
