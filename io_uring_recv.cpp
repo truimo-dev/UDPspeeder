@@ -291,10 +291,10 @@ uring_add_multishot_recvmsg(uring_ctx_t *ctx, int fd, uint64_t user_data)
     sqe->fd = fd;
     sqe->user_data = user_data;
     sqe->flags = IOSQE_BUFFER_SELECT;
-    sqe->ioprio = IORING_RECV_MULTISHOT;
     sqe->addr = (unsigned long long)&ctx->recvmsg_hdr;
     /* IORING_OP_RECVMSG expects len=1 (msghdr count), matching liburing. */
     sqe->len = 1;
+    sqe->msg_flags = IORING_RECV_MULTISHOT;
     sqe->buf_group = (__u16)ctx->bgid;
 
     submit_sqe(ctx);
@@ -312,7 +312,7 @@ uring_add_multishot_recv(uring_ctx_t *ctx, int fd, uint64_t user_data)
     sqe->fd = fd;
     sqe->user_data = user_data;
     sqe->flags = IOSQE_BUFFER_SELECT;
-    sqe->ioprio = IORING_RECV_MULTISHOT;
+    sqe->rw_flags = IORING_RECV_MULTISHOT;
     sqe->buf_group = (__u16)ctx->bgid;
 
     submit_sqe(ctx);

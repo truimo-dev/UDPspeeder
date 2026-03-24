@@ -265,6 +265,8 @@ static void client_uring_drain(struct ev_loop *loop) {
             int more = cqe->flags & IORING_CQE_F_MORE;
 
             if (cqe->res < 0) {
+                mylog(log_warn, "io_uring client cqe error: type=%u user_data=%llu res=%d more=%d\n",
+                      (unsigned)type, (unsigned long long)cqe->user_data, cqe->res, more ? 1 : 0);
                 if (!more && cqe->res != -ECANCELED) {
                     if (type == URING_TAG_CLIENT_LOCAL)
                         uring_add_multishot_recvmsg(ctx, conn_info.local_listen_fd, cqe->user_data);
